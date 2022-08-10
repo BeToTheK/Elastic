@@ -1,0 +1,273 @@
+1. Setup a Virtual Machine using a hypervisor(Oracle Virtualbox)
+ a. Setup Centos-7 using an iso file
+ b. Settings System 4096MB
+    Processor 2CPU's
+    Shared Clipboard: Bidirectional
+ c. Network configuration under settings. 
+	Adapter 1 -- Attached to: Internal Network 
+		     Name: intnet
+                     Advanced -> Promiscuous Mode: Allow VM's
+	Adapter 2 -- NAT
+		     Advanced -> Port Forwarding
+                     Port Forwarding: Elastic, Fleet, Kibana, SSH
+		     Host IP(ALL):127.0.0.1
+                     Host Port(respectively): 9200,8220,5601,2222
+                     Guest IP(ALL):10.0.3.15
+                     Guest Port(respectively): 9200,8220,5601,22
+
+Using SSH we can access Centos VM through Windows command line
+> ssh -p 2222 bk@127.0.0.1 -> prompt to fingerpring -> enter password
+$ whoami
+$ hostname
+Should return your Centos username and hostname selected on Install
+
+
+2. Install Elasticsearch(7.17.5) on Centos
+ a. Create the elastic.repo file in the /etc/yum.repos.d directory
+	$ sudo nano /etc/yum.repos.d/elastic.repo
+	[elastic]
+	name=Elastic repository for 7.x packages
+	baseurl=https://artifacts.elastic.co/packages/7.x/yum
+	gpgcheck=1
+	gpgkey=https://artifacts.elastic.co/GPG-KEY-elasticsearch
+	enabled=1
+	autorefresh=1
+	type=rpm-md
+ b. Import GPG KEY
+	$ sudo rpm --import https://artifacts.elastic.co/GPG-KEY-elasticsearch
+ c. sudo yum install elasticsearch
+ d. Start on boot
+	$ sudo systemctl enable elasticsearch
+	$ sudo systemctl start elasticsearch
+ e. Test Connection
+	$ curl localhost:9200
+ f. Configure and Secure the stack
+	$ sudo nano /etc/elasticsearch/elasticsearch.yml
+	Rename cluster/node by uncommenting and/or editing
+	discovery.type: single-node
+	network.host: 0.0.0.0
+	discovery.seed_hosts: ["0.0.0.0"]
+	xpack.security.enabled: true
+	xpack.security.authc.api_key.enabled: true
+ g. Restart and check security and connection
+	$ sudo systemctl restart elasticsearch
+	$ systemctl status elasticsearch
+ h. Setup Passwords
+	$ sudo /usr/share/elasticsearch/bin/elasticsearch-setuppasswords interactive
+ i. Check connection again using superuser name/pass
+	*$ curl localhost:9200?pretty
+	*This should return status 401
+	**$ curl -u elastic localhost:9200 (then password prompt)
+	**This should access the endpoint
+
+3. Install Elastic-Agent(7.17.5-1)
+	$ sudo yum install elastic-agent
+	$ sudo systemctl enable elastic-agent
+
+4. Install Kibana(7.17.5-1)
+	$ sudo yum install kibana
+	$ sudo systemctl enable kibana
+
+5. Connecting Kibana to Elasticsearch
+ a. Add elasticsearch.username and elasticsearch.password to KeyStore
+	$ sudo /usr/share/kibana/bin/kibana-keystore add elasticsearch.username
+	  -->Enter value for elasticsearch.username: kibana_system
+	$ sudo /usr/share/kibana/bin/kibana-keystore add elasticsearch.password
+          -->Enter value for elasticsearch.password: < whatever password you set >
+6. Configure Kibana
+	$ sudo nano /etc/kibana/kibana.yml
+ a. Uncomment #server.host: "localhost"
+ b. Change localhost to "0.0.0.0" to allow external access.
+ c. xpack.encryptedSavedObjects.encryptionKey: "any or more 32-characters"
+ d. xpack.fleet.agents.tlsCheckDisabled: true
+ e. sudo firewall-cmd --add-port=5601/tcp --add-port=9200/tcp --add-port=8220/tcp --permanent
+ f. sudo firewall-cmd --reload
+
+8. Enabling the detection engine and Fleet
+ a. From a browser open Kibana http://localhost:5601
+ b. Select Security
+ c. Click on Load Elastic prebuilt rules and timeline templates
+	This will load prebuilt Elastic rules into the detection engine
+Generated Token = AAEAAWVsYXN0aWMvZmxlZXQtc2VydmVyL3Rva2VuLTE2NTk4MzgzMzkwMjM6N1R1eF8ySlNUeGE0SkJIV2Y4Q3Z6UQ
+Fleet Server:
+sudo elastic-agent enroll --url=https://172.16.0.101:8220 \
+  --fleet-server-es=http://172.16.0.101:9200 \
+  --fleet-server-service-token=AAEAAWVsYXN0aWMvZmxlZXQtc2VydmVyL3Rva2VuLTE2NTk4MzgzMzkwMjM6N1R1eF8ySlNUeGE0SkJIV2Y4Q3Z6UQ \
+(DID NOT USE BUT IS SUGGESTED BY ES):
+  --fleet-server-policy=499b5aa7-d214-5b5d-838b-3cd76469844e \
+  --certificate-authorities=<PATH_TO_CA> \
+  --fleet-server-es-ca=<PATH_TO_ES_CERT> \
+  --fleet-server-cert=<PATH_TO_FLEET_SERVER_CERT> \
+  --fleet-server-cert-key=<PATH_TO_FLEET_SERVER_CERT_KEY>
+
+===========================================================================================================================
+Setting up a Windows Victim Machine(non obvious steps only*)
+
+1. Install windows 10 using an ISO
+ a. On Virtualbox set Network Adapter 1 and Adapter 3 to intnet and NAT respectively
+ b. Open cmd and try to hit the elastic node using the Elastic Vbox IP:
+	>curl -u elastic 172.16.0.101:9200  
+ c. Install Additional Addons
+  c1. Settings > General > Advanced > Shared Clipboard > Bidirectional
+  c2. Devices>Insert Guest CD
+  c3. ThisPC > Click CD Drive(D:) > VBoxWindowsAdditions > Follow install instructions > Reboot
+2. PowerShell script block logging
+	*PowerShell script block logging records the content of all the script blocks that it 
+	processes. This is very valuable in tracking the malware and adversaries that leverage 
+	PowerShell.This code will enable PowerShell script block logging, which will allow us to 
+	record detailed information about PowerShell activities on the victim machine.
+Copy paste the following into Powershell as Admin.:
+function Enable-PSScriptBlockLogging
+{
+ $basePath = 'HKLM:\Software\Policies\Microsoft\
+Windows' +
+ '\PowerShell\ScriptBlockLogging'
+ if(-not (Test-Path $basePath))
+ {
+ $null = New-Item $basePath -Force
+ }
+ Set-ItemProperty $basePath -Name 
+EnableScriptBlockLogging -Value "1"
+}
+===========================================================================================================================
+
+1. Filebeat Installation
+ a. $ sudo yum install filebeat -y
+ b. $ sudo filebeat modules enable threatintel
+
+2. Configure Filebeat
+  a. $ sudo nano /etc/filebeat/modules.d/threatintel.yml
+	a1. Change MISP and OTX from true to false
+	a2. Under Anomali uncomment var.username and var.password
+  b. $ sudo nano /etc/filebeat/filebeat.yml
+	b1. Under Elasticsearch Output, uncomment and username and password. Add your password
+
+3. Push ingest pipeline into Elasticsearch
+  a. sudo filebeat setup
+
+4. Start Filebeat
+ a. $ sudo systemctl enable filebeat
+ b. $ sudo systemctl start filebeat
+
+=============================================================================================================================
+
+Victim Machine Setup
+
+1. Install Winlogbeat and configuration
+	a. Extract Winlogbeat to Program Files
+	b. open cmd as admin. and cd c:/program files/winlogbeat...
+	c. winlogbeat.exe keystore create
+	d. winlogbeat.exe keystore add ES_PWD
+	    *This should be the same password as elastic user
+	e. notepad.exe winlogbeat.yml
+	 e1. Scroll down to Kibana section. Uncomment host line and change to Elastic Vbox IP
+   	    *host: "172.16.0.101:5601"   <-- Example(book is wrong here/typo)
+	f. Scroll down to Elasticsearch Output section and change hosts to Elastic Vbox IP
+	g. Uncomment Username and Password. Change Password to ${ES_PWD}
+	h. Test Connection(under same dir): 
+	      winlogbeat test config
+              winlogbeat test output
+	i. Manually start and setup index patterns/load dashboard: winlogbeat.exe setup
+	j. send in some data: winlogbeat.exe
+		Go to Kibana dashboard and reload > you should see data under winlogbeat-*
+	k. Install as a service:
+		PowerShell.exe -ExecutionPolicy UnRestricted -File .\install-service-winlogbeat.ps1
+	l. move Keystore to hidden ProgramData Dir. (Path files different in book, this one works):
+		"C:\Program Files\winlogbeat-7.11.1-windows-x86_64\data\winlogbeat.keystore" c:\ProgramData\winlogbeat
+		
+	
+2. Install Npcap, follow installation wizard (easy)
+
+3. Install Packetbeat and configuration
+ a. Follow Winlogbeat steps for extraction and installation
+ b. Create a keystore
+	packetbeat.exe keystore create
+ c. Add password 
+	packetbeat.exe keystore add ES_PWD
+ d. Define the device Packetbeat will monitor
+	packetbeat.exe devices
+	**Look for the device number which has 10.0.4.15, mine is "0" but may be different
+ e. Open packetbeat.yml and uncomment the packetbeat.interfaces.device:0 (or w/e number)
+ f. configure packetbeat.yml with the same credentials as Winlogbeat.
+	ie. ==Kibana== host:"172.16.0.101:5601"
+	    --elasticsearch output-- hosts:["172.16.0.101:9200"]
+	    uncomment username and password..change password to "${ES_PWD}"
+ g. Test Packetbeat config and output
+	packetbeat.exe test config
+	packetbeat.exe test output
+ h. Run the setup to load the index patterns and dashboards
+	packetbeat.exe setup
+ i. Run Packetbeat and check Kibana if there is a new index and data, try googling something..
+	ctrl+c(2xtimes) to stop
+ j. PowerShell.exe -ExecutionPolicy UnRestricted -File .\install-service-packetbeat.ps1
+ k. "C:\Program Files\packetbeat-7.11.1-windows-x86_64\data\packetbeat.keystore" c:\ProgramData\packetbeat (The book suggests \data\winlogbeat.keystore" c:\ProgramData\winlogbeat)*
+	 *This would overwrite the file...has to be a typo
+ l. reboot wm --> shutdown /r
+ m. Run > services.msc and look for packetbeat and winlogbeat
+
+
+4. Download and Install Sysmon, SwiftOnSecurity, and configuration
+ a. curl -OL https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml
+ b. CMD as Admin: c:\Program Files\Sysmon64.exe -i 
+ c. Make sure sysmon64 is running as a service 
+	*(Took some tinkering to get this working)
+	If this doesnt work search the github for useful info.
+ d. Check Winlogbeat-* Index under event.modules to make sure sysmon data is getting to elastic
+
+=============================================================================================================================
+
+Configuring Fleet
+
+1. In Kibana: Hamberger > Fleet > Agent Policies > Create Agent Policy
+ a. Name it something (mine: Windows VictimBox) > Uncheck Collect System Metrics(useful but noise for this lab) > Create Agent Policy
+
+2. Click on the Policy just created to add an integration 
+ a. In the search bar type Windows
+ b. Click on Windows > Add +Windows integration
+ c. Uncheck Collect Windows Perfmon and service metrics
+ d. Click the drown for Collect events from the following Win event log channels to see what kind of logs are collected
+ e. Save and Continue
+ f. Follow the same steps for Endpoint Security
+
+3. Click on the Endpoint Security integration you just made and edit it
+ a. Under Policy Settings - Type: Malware - Protection Level, Click Detect.
+       (***This is not recommded for production envs.**) we want to collect the data after malware has detonated
+ b. Bottom of the page Select Register as antivirus 
+	*So windows defender doesnt clash with this integration
+ c. Click Save Integration
+
+4. Deploying Elastic Agent
+ a. download bin for elastic-agent (my ver 7.13.1) and extract to Program Files
+ b. Hamburger menu > Fleet > Windows Policy > Add Agent
+ c. copy and paste the Windows install cmd line while making sure IP matches elastic Vbox
+ d. As Admin open cmd and cd to program files\elastic-agent and then paste the auto generated text
+	**Make a minor adjustment to this link by adding --insecure if not using TLS
+	My Example:
+	.\elastic-agent.exe install --url=https://172.16.0.101:8220 --insecure --enrollment-token=WkJGUmhJSUJOTThpTHVTcnJQUHg6bDdtSmRobHpUaWlWNmUyTjNmdm9tZw==
+ e. Head over to Kibana and check that the Host is in your Fleet Agents and in Discover logs-* Index is feeding in data.
+
+=============================================================================================================================
+
+Creating Filters and Viewing Data
+
+For example if we wanted to 
+
+1. display events where the network.protocol field has a value of tls
+	+Add Filter > Field: network.protocol > Operator: Is > tls
+
+2. display events where the destination.domain field exists.
+	+Add Filter > Field: destinantion.domain > Operator: Exists
+
+3. display events where the tls.server.x509.issuer.organization field has a value of Microsoft Corporation.
+	+Add Filter > tls.server.x509.issuer.organization > Operator: Is > Microsoft Corporation
+
+4. Add the following columns to the Event view:
+  a. source.ip
+  b. destination.domain
+  c. destination.port
+	+By searching a,b,c in Search Field Names and clicking the [+] symbol
+
+5. Create a shortened URL with the filtered data
+	Share > Short URL > Copy link 
+     http://localhost:5601/goto/b32c0240-188b-11ed-995a-73a60b97d343
+
